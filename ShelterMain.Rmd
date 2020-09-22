@@ -1,0 +1,686 @@
+---
+title: 'Master IA: Métodos supervisados'
+author: "Manuel Jesús Jimnémez Navarro"
+date: "17 de noviembre de 2019"
+output:
+  prettydoc::html_pretty:
+    theme: architect
+    highlight: github
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Master IA: Métodos supervisados
+## Clasificación de gestos a través de actividad muscular
+
+### Índice
+
+1. Contexto del problema
+2. Descripción de los datos
+3. Evaluación
+4. Visualización y preprocesado
+5. Modelado
+6. Resultados
+7. Conclusiones
+
+### Contexto del problema
+
+Diariamente un gran número de animales son abandonados y recogidos por refugios de animales. Muchos de estos animales poseen diversos problemas para volver a reincorporarse a una nueva familia debido a varios factores. En el presente estudio se pretende clasificar cual será el destino de los animales del refugio dependiendo de sus características y así dar una mayor ayuda a aquellos animales que tengan menos probabilidades de poderser adoptados.
+
+### Descripción de los datos
+
+Los datos recogidos provienen del centro de animales de Austin [1] recogidos desde el 1 de Octubre de 2013 hasta Marzo de 2016. La variable objetivo representa el estado en el que el animal adoptado abandona el centro. Los posibles estados en los que los animales pueden abandonar el centro son 5: Adopción, muerte, eutanasia, vuelta al dueño y transferido. Como variables descriptoras se tiene las siguientes:
+
+  - AnimalId: Identificador único asignado al animal recogido.
+  - Name: Nombre del animal.
+  - Datetime: Fecha en la que se recogió.
+  - AnimalType: Tipo de animal del que se trata (perro, gato..).
+  - SexUponOutcome: Sexo del animal y si fue castrado/esterilizado/dejado intacto.
+  - AgeUponOutcome: Edad del animal aproximada.
+  - Breed: Raza del animal.
+  - Color: Color del pelaje del animal.
+  
+
+### Evaluación
+
+Dado que se trata de un problema de clasificación multiclase donde las clases son excluyentes entre sí. Para ello, la competición propone la pérdida logarítmica multiclase con la siguiente fórmula: 
+
+Donde N es el número de animales en el conjunto de test, m es el número de clases, log es el logaritmo en base 10, yij si la clase del ejemplo i es igual a la clase j y pij es la probabilidad de que el ejemplo i pertenezca a la clase j.
+
+### Visualización Preprocesado
+
+En esta sección se realizarán algunas visualizaciones sencillas de los datos así como distintas métricas y visualizaciones con el objetivo de realizar el preprocesado necesario.
+
+```{r pressure, echo=FALSE, results = 'hide', warning=FALSE, error=FALSE, message=FALSE}
+library(caret)
+library(stringr)
+library(data.table)
+library(corrplot)
+library(dplyr)
+library(tidyr)
+library("devtools")
+library("ggthemes")
+library(MLmetrics)
+library(missForest)
+train = read.csv('./train.csv', na.strings = "")
+test = read.csv('./test.csv', na.strings = "")
+set.seed(123)
+```
+
+En primer lugar, se observarán una muestra de los datos y así poder familiarizarse con los datos.
+```{r preview-1}
+head(train)
+```
+
+En segundo lugar se realizará un análisis de distintos estadísticos de los datos.
+
+```{r preview-2}
+str(train)
+```
+
+Esta tabla posee bastante información y analizándola podemos extraer mucha información útil. El conjunto de entrenamiento posee 26729 muestras y 10 atributos. La tabla muestra que los tipos de los datos perteneces a Factor, es decir, todos los valores son de tipo nominal. Por otro lado, se muestra por cada atributo el número diferente de valores que puede tomar, analizaremos los atributos más destacables:
+  - AnimalId se trata de un identificador único, tal y como se ve posee tantos valores como muestras, por lo tanto este atributo no nos será de utilidad.
+  - Name: El nombre del animal posee 6375 valores, a priori podría pensarse que no es de utilidad, aunque posteriormente observaremos que podemos extraer información útil.
+  - OutcomeSubtype: Este atributo muestra información adicional con respecto a la variable clase, dado que se trata de un atributo que depende de la predicción no consideraremos este atributo.
+  - AnimalType: Se observa que solo existirán 2 tipos de animales, perros y gatos.
+  - SexuponOutcome: Este atributo tiene 5 niveles debido a la combinación de Sexo del animal y sobre si se ha realizado esterilización/castración o no.
+  - Color: En el color se ve cómo puede existir combinaciones de colores.
+  
+```{r preview-3, echo=FALSE}
+train$AnimalID = NULL
+train$OutcomeSubtype = NULL
+```
+
+A continuación, se estudiarán distintas métricas sobre los datos:
+
+```{r preview-4}
+summary(train)
+```
+
+En esta tabla se muestra principalmente la distribución de datos sobre una muestra de los ejemplos. De aquí se destacará lo más interesante.
+Por un lado, se observa en la distribución de la clase que estamos ante un problema desbalanceado. Se puede ver que la adopción es el tipo de destino más común seguido de la transferencia. La devolución al dueño es un poco menos común, y la eutanasia y la muerte son los destinos menos comunes. Al tratarse de un problema desbalanceado sería necesario tener en cuenta un modelo robusto a este fenómeno. Por otro lado, la distribución de animales no es igual, aunque si es parecida. En el caso del sexo, se observa que existe un valor perdido, esto puede ser debido a algún error o cualquier otro tipo de problema. En cualquier caso, este valor será ignorado. En el caso de la edad se observa que existen 18 ejemplos donde la edad es desconocida, en este caso se puede, o bien eliminar dichos ejemplos o intentar "recuperar" estos valores perdidos. Al poseer bastantes ejemplos no se ve la necesidad de invertir esfuerzo en recuperarlos, por lo tanto, se eliminarán.
+
+
+En este momento es necesario se realizar ciertas transformaciones sobre los datos de entrenamiento para proseguir con el análisis. En primer lugar, se eliminarán los registros correspondientes a los datos perdidos visualizados anteriormente excepto para los del nombre (posteriormente veremos porqué).
+
+
+```{r preprocess-1}
+train = train[!is.na(train$SexuponOutcome),]
+train = train[!is.na(train$AgeuponOutcome),]
+
+sapply(train, function(x) sum(is.na(x)))
+```
+
+Una vez realizado esto, será necesario procesar los atributos. El primer atributo que se tratará será el nombre, este atributo en sí no aporta gran información a la hora de decidir su destino a priori. Sin embargo, cabe esperar que un animal encontrado que posea un nombre es más probable que sea perdido a abandonado y por lo tanto es más probable que se devuelva al dueño. Por lo tanto, en el caso del nombre se convertirá en un valor booleano que indicará la existencia o no de nombre.
+
+```{r preprocess-2}
+train$Name = is.na(train$Name) 
+str(train)
+```
+
+Por otro lado, la fecha no es demasiado "usable" de esta forma, es necesario pasarla a un formato en el que se pueda usar de una forma mas cómoda para el modelo. Por lo tanto, se separará la fecha en año, mes, día y hora (se obviarán los minutos y segundos al considerarse irrelevantes). Estos valores pueden aportar información útil, ya que es bien sabido que hay épocas del año donde más animales se abandonan o se pierden (fin de temporada de caza, vacaciones...). También es más probable perder a un animal durante la noche que durante el día. Por ello, se separarán estos datos de esta forma.
+
+```{r preprocess-3}
+train$Year = as.numeric(format(as.Date(train$DateTime), '%Y'))
+train$Month = as.numeric(format(as.Date(train$DateTime), '%m'))
+train$Day = as.numeric(format(as.Date(train$DateTime), '%d'))
+train$Hour = as.numeric(format(as.POSIXct(train$DateTime,format="%Y-%m-%d %H:%M:%S"), '%H'))
+train$DateTime = NULL
+
+str(train)
+```
+
+En el caso del sexo, si se observa que el atributo posee dos tipos de información: el propio sexo y la existencia de esterilización/castración. Por lo tanto se separará esta información para facilitar el modelado. En primer luga, se observarán los distintos valores:
+
+```{r preprocess-4}
+unique(train$SexuponOutcome)
+
+```
+Se observa que existen ciertos valores desconocidos, este valor podría considerarse como un valor perdido, sin embargo, es posible puede aportar información útil. Por lo tanto, se obtendrá un tercer atributo indicando si la esterilización/castración es desconocida o no. Se observa que existen animales donde el sexo no se considera, dado de que se trata de una gran cantidad de muestras, se sustituirán dichos valores con el sexo mayoritario, en este caso el masculino.
+
+
+```{r preprocess-5}
+train$isSNUnknown = train$SexuponOutcome=="Unknown"
+train$isSN <- str_split_fixed(as.character(train$SexuponOutcome), " ", 2)[,1]
+train$sex <- str_split_fixed(as.character(train$SexuponOutcome), " ", 2)[,2]
+train$sex[as.character(train$sex)==""] = "Male"
+train$sex[is.na(train$sex)] = "Male"
+train$isSN = !(train$isSN %like% "Intact" | train$isSN %like% "Unknown")
+train$SexuponOutcome = NULL
+
+
+summary(train)
+```
+
+En el caso de la edad, se tiene la edad dada en medida categórica en función de días, meses o años. Podría considerarse convertir estos valores a numéricos mediante una categorización numérica. Sin embargo, dado que la magnitud del valor es influyente, la diferencia entre los valores deberían ser continuos. Por ejemplo, si se codifica como 3 la categoría 1 Months, y 4 como el valor "5 Months" se observa que la diferencia en cuanto a valor categórico es 1 pero conceptualmente los valores no tienen esa diferencia. Es decir, se necesita mostrar de forma numérica la diferencia en cuanto a la magnitud de los distintos valores. Por ello, es necesario convertir todos los valores a días al ser la unidad mínima mostrada.
+
+```{r preprocess-6}
+
+
+ageValue = as.numeric(sapply(as.character(train$AgeuponOutcome),  
+                      function(x) strsplit(x, split = ' ')[[1]][1]))
+ageUnit = sapply(as.character(train$AgeuponOutcome),  
+                      function(x) strsplit(x, split = ' ')[[1]][2])
+ageUnit = gsub('s', '', ageUnit)
+
+unique(ageUnit)
+
+daysForUnit = ifelse(ageUnit == 'day', 1,
+              ifelse(ageUnit == 'week', 7,
+              ifelse(ageUnit == 'month', 30,
+              ifelse(ageUnit == 'year', 365, NA))))
+
+train$AgeInDays = ageValue * daysForUnit
+train$AgeuponOutcome = NULL
+
+str(train)
+```
+
+En cuanto a la raza, se puede transformar a numérico estos valores categóricos. Sin embargo, si se observan los datos, se ve como existe el término mezcla si se desconoce las posibles razas de la ascendencia o unos valores separados por una barra lateral. Un animal con una raza pura es más probable que sea un animal abandonado, al igual que una raza donde la mezcla se pueda identificar claramente. En el caso de la mezcla puede asociarse a un animal con más probabilidad a ser abandonado o ser callejero. Por lo tanto, de este atributo se obtendrán tres, la raza primaria, la raza secundaria (que puede tener o no) y si se trata de un mestizo (mezcla de varios). 
+
+```{r preprocess-7}
+unique(train$Breed)[1:30]
+```
+
+
+```{r preprocess-8}
+train$isMix = tolower(as.character(train$Breed)) %like% "mix"
+breedWithoutMix = gsub('mix', '',  tolower(as.character(train$Breed)))
+breedWithoutMix = gsub("^\\s+|\\s+$", "", breedWithoutMix)
+train$firstBreed <- str_split_fixed(as.character(breedWithoutMix), "/", 2)[,1]
+train$secondBreed <- str_split_fixed(as.character(breedWithoutMix), "/", 2)[,2]
+train$secondBreed[as.character(train$secondBreed)==""] = NA
+train$Breed = NULL
+
+str(train)
+```
+
+En el caso del color también pueden existir dos valores. Se procederá a separarlo en dos atributos.
+
+```{r preprocess-9}
+colorTrimmed = gsub("^\\s+|\\s+$", "", train$Color)
+unique(train$Color)
+train$firstColor <- str_split_fixed(as.character(colorTrimmed), "/", 2)[,1]
+train$secondCOlor <- str_split_fixed(as.character(colorTrimmed), "/", 2)[,2]
+train$Color = NULL
+
+# train$sex
+summary(train)
+
+#write.csv(train, "train_processed2.csv")
+```
+
+
+
+Tras esto, se obtendrán algunos gráficos con el objetivo de obtener una mayor comprensión sobre los datos, en específico, se estudiará el comportamiento de los datos respecto la clase para intentar observar posibles correlaciones.
+
+```{r view-1, echo=FALSE}
+daytimes <- train %>%
+  group_by(AnimalType, Year, OutcomeType) %>%
+  summarise(num_animals = n())
+
+# Plot
+ggplot(daytimes, aes(x = Year, y = num_animals, fill = OutcomeType)) +
+  geom_bar(stat = 'identity', position = 'fill', colour = 'black') +
+  facet_wrap(~AnimalType) +
+  coord_flip() +
+  labs(y = 'Proportion of Animals', 
+       x = 'Animal',
+       title = 'Destinos por año para gatos y perros') +
+  theme_few()
+```
+Mediante esta gráfica se puede observar la evolución temporal que ha tenido los destinos para los distintos animales. En el caso de los perros se observa que la adopción ha ido aumentándose al igual que la devolución a los dueños, mientras que los otros destinos se han decrementado. Sin embargo, en el caso de los gatos, esta evolución no ha sido tan clara, se observa cómo entre 2014 y 2025 la transferencia incrementó muchísimo mientras que la adopción decrementó. Por otro lado, los valores de eutanasia, devuelta al usuario y muerte se mantienen aparentemente. En el caso de los gatos, la devuelta al usuario parece menos común que en el caso de los perros.
+
+
+
+```{r view-2, echo=FALSE}
+attach(train)
+ageAnimals <- train %>%
+  group_by( AgeInDays, OutcomeType) %>%
+  summarise(num_animals = n())
+
+# Plot
+ggplot(ageAnimals, aes(AgeInDays)) +
+    geom_line(aes(y = num_animals)) + 
+  labs(y = 'Proportion of Animals', 
+       x = 'Animal',
+       title = 'Destinos por hora para gatos y perros')+
+    facet_wrap(~OutcomeType)
+  #theme_few()
+```
+En esta gráfica se intenta analizar el comportamiento de los destinos respecto la edad del animal. Se observa que la adopción posee un valor extremadamente alto en casos donde la edad sea muy temprana (pocos días o meses) y va decreciendo conforme la edad avanza. Por otro lado, la devuelta al dueño es común en casos donde el animal tiene una edad ya un poco madura. Esto tiene sentido, ya que antes es muy probable que no pueda salir siquiera, además, decrece conforme el animal es mayor, al igual que pasa con la adopción. La transferencia se comporta de manera similar a la adopción, pero con un valor menor en edades muy tempranas. La eutanasia y muerte muestran oscilaciones mayores en edades muy tempranas o en edades donde se tiene un animal acabado de madurar.
+
+
+```{r view-3, echo=FALSE}
+sexValues <- train %>%
+  group_by(AnimalType, sex, OutcomeType) %>%
+  summarise(num_animals = n())
+
+# Plot
+ggplot(sexValues, aes(x = sex, y = num_animals, fill = OutcomeType)) +
+  geom_bar(stat = 'identity', position = 'fill', colour = 'black') +
+  facet_wrap(~AnimalType) +
+  coord_flip() +
+  labs(y = 'Proportion of Animals', 
+       x = 'Animal',
+       title = 'Destinos por primera raza para gatos y perros') +
+  theme_few()
+```
+En esta gráfica se muestra la influencia del sexo sobre los destinos de los distintos tipos de animales. Por una parte, se ve que los animales con sexo femenino poseen una mayor probabilidad de ser adoptados o resultar en muerte o eutanasia.
+
+
+```{r view-4, echo=FALSE}
+breedValues <- train %>%
+  group_by(AnimalType, isMix, OutcomeType) %>%
+  summarise(num_animals = n())
+
+# Plot
+ggplot(breedValues, aes(x = isMix, y = num_animals, fill = OutcomeType)) +
+  geom_bar(stat = 'identity', position = 'fill', colour = 'black') +
+  facet_wrap(~AnimalType) +
+  coord_flip() +
+  labs(y = 'Proportion of Animals', 
+       x = 'Animal',
+       title = 'Destinos por primera raza para gatos y perros') +
+  theme_few()
+```
+ En esta gráfica se compara la proporción por cada tipo de animal de los distintos destinos. Se observa como en el caso de que se trate de una mezcla los valores de adopción decrecen aumentando el de eutanasia y devuelta al dueño en el caso de los perros y aumento en la transferencia solo en el caso de los gatos.
+ 
+
+```{r view-5, echo=FALSE}
+monthtimes <- train %>%
+  group_by(AnimalType, isSNUnknown, OutcomeType) %>%
+  summarise(num_animals = n())
+
+# Plot
+ggplot(monthtimes, aes(x = isSNUnknown, y = num_animals, fill = OutcomeType)) +
+  geom_bar(stat = 'identity', position = 'fill', colour = 'black') +
+  facet_wrap(~AnimalType) +
+  coord_flip() +
+  labs(y = 'Proportion of Animals', 
+       x = 'Animal',
+       title = 'Destinos por mes para gatos y perros') +
+  theme_few()
+```
+
+En el caso del desconocimiento de la castración/esterilización se observa que influye mucho. En el caso de que sea desconocido, la adopción se hace prácticamente imposible y las opciones que son más posibles son la transferencia o la eutanasia. Destacar que en el caso de los perros es mucho más probable el retorno al dueño que en el caso de los gatos.
+
+```{r view-6, echo=FALSE}
+monthtimes <- train %>%
+  group_by(AnimalType, Name, OutcomeType) %>%
+  summarise(num_animals = n())
+
+# Plot
+ggplot(monthtimes, aes(x = Name, y = num_animals, fill = OutcomeType)) +
+  geom_bar(stat = 'identity', position = 'fill', colour = 'black') +
+  facet_wrap(~AnimalType) +
+  coord_flip() +
+  labs(y = 'Proportion of Animals', 
+       x = 'Animal',
+       title = 'Destinos por mes para gatos y perros') +
+  theme_few()
+```
+El nombre también tiene una gran influencia en los resultados, en el caso de que no lo posea, la devuelta al dueño decrece en gran medida incrementándose la probabilidad de eutanasia o transferencia.
+
+Una vez analizado, ya solo quedan los últimos retoques con el objetivo de dejar los datos listos para la fase de modelado. Para ello, se realizará una transformación a numérico de los distintos atributos que queden por transformar y posteriormente se realizará un escalado y centrado de los datos.
+```{r preprocess-final}
+
+train$AnimalType = as.numeric(train$AnimalType)
+train$sex = as.numeric(as.factor(train$sex))
+train$firstBreed = as.numeric(as.factor(train$firstBreed))
+train$secondBreed = as.numeric(as.factor(train$secondBreed))
+train$firstColor = as.numeric(as.factor(train$firstColor))
+train$secondCOlor = as.numeric(as.factor(train$secondCOlor))
+train$Name = as.numeric(as.factor(train$Name))
+train$isSN = as.numeric(as.factor(train$isSN))
+train$isSNUnknown = as.numeric(as.factor(train$isSNUnknown))
+train$isMix = as.numeric(as.factor(train$isMix))
+
+
+str(train)
+train$secondBreed[is.na(train$secondBreed)] = 0
+summary(train)    
+```
+
+
+Una vez transformados los datos de esta forma, es posible realizar alguna visualización estadística adicional. En primer lugar, se mostrará una matriz de correlación.
+
+```{r corrplot}
+train_outcome_num = train
+train_outcome_num$OutcomeType = as.numeric(train_outcome_num$OutcomeType)
+corrplot(cor(train_outcome_num))
+```
+
+Mediante la matriz de correlación se pueden observar aquellas variables que poseen una alta correlación entre ellas. En el caso de la clase, se observa que existe una alta correlación inversa con la información acerca de si ha sido esterelizado/castrado el animal. Por otro lado, se observa que el nombre está altamente correlacionado inversamente con la información acerca de si ha sido esterilizado/castrado el animal. De la misma forma el nombre y la variable case están correlacionadas directamente, aunque en menor medida. Por último, se ve una clara relación indirecta entre la segunda raza y la mezcla como es lógico, ya que solo puede ser mezcla si la segunda raza aparece.
+
+En segundo lugar, se mostrará un diagrama de cajas y bigotes con el objetivo de poder visualizar algún outlier quizás.
+
+```{r boxplot}
+boxplot(train_outcome_num, las = 2)
+```
+
+A través de este análisis estadístico, se observa que existen una gran cantidad de outliers sobre todo en la edad, para solucionar este hecho realizaremos una limpieza de estos valores. Los valores atípicos en los valores booleanos se ignorarán al igual que las demás clases debido a la descompensación entre los distintos valores.
+
+```{r outlier-1, echo=FALSE}
+remove_outliers <- function(x, na.rm = TRUE, ...) {
+  qnt <- quantile(x, probs=c(.25, .75), na.rm = na.rm, ...)
+  H <- 1.5 * IQR(x, na.rm = na.rm)
+  y <- x
+  y[x < (qnt[1] - H)] <- NA
+  y[x > (qnt[2] + H)] <- NA
+  y
+}
+```
+
+```{r outlier-2}
+train$AgeInDays = remove_outliers(train$AgeInDays)
+train = train[!is.na(train$AgeInDays),]
+write.csv(train, "train_processed.csv", row.names = FALSE)
+```
+
+Por último se mostrará la distribución de las distintas variables mediante un histograma.
+
+```{r view-hist, echo=FALSE}
+ggplot(gather(train_outcome_num), aes(value)) + 
+    geom_histogram(bins = 10) + 
+    facet_wrap(~key, scales = 'free_x')
+```
+De esta gráfica se obtiene información muy útil como saber cual es la proporción total de animales con mezcla, saber que el primer y último año tiene menos valores. Además, las horas se concentran mayoritariamente en horas más centrales con tendencia a la tarde.  
+
+A partir de este momento, los datos ya se encuentran listos para poder pasar a la fase de modelado.
+
+
+### Modelado
+
+Durante esta fase se realizarán experimentos con distintos modelos con el objetivo de seleccionar aquel que mejores resultados aporte. El proceso será el siguiente, en primer lugar durante el entrenamiento, se preprocesarán los datos de distintas formas y se realizará la validación mediante repeated cross validation y .625Bootstrap en caso de que se vea necesario. Dado que en la competición se usa el logLoss como medida de evaluación, se usará solo esta métrica para poder comparar o evaluar a los modelos.
+
+El conjunto de entrenamiento no será particionado ya que los métodos usados para entrenar solo incluirán una validación cruzada o muestra bootstrap. Por lo tanto, los valores obtenidos serán suficientes como para poder estudiar la capacidad de generalización de los modelos. Para obtener una comparación justa, en todos los modelos se realizará una búsqueda de 10 combinaciones de parámetros escogidos de forma aleatoria con 10 divisiones de la validación cruzada con 3 repeticiones.
+
+Los modelos escogidos son los siguientes:
+
+- LDA: El modelo discriminante lineal trata de obtener aquellos hiperplanos que separa el espacio en tantos grupos como clase.
+- XGBTree: Gradient boosting Machine y XGBTree son algoritmos que hacen uso del gradient boosting en el que se entrenan varios clasificadores "débiles" (clasificadores no muy complejos) de forma secuencial de manera que el siguiente modelo logre clasificar correctamente los ejemplos que el anterior modelo no fue capaz.
+
+
+
+```{r, echo=FALSE}
+train = read.csv("train_processed.csv")
+attach(train)
+```
+
+
+En primer lugar, se probará con un modelo lineal discriminante.
+```{r LDA-RY}
+
+train_control<- trainControl(method="repeatedcv", number=10,repeats=3, classProbs= TRUE, summaryFunction = multiClassSummary, search = "random")
+ldaModel <- train(  x = train[, names(train) != "OutcomeType"],
+    y = train$OutcomeType, data=train,method="lda", trControl=train_control,preProc=c("range","YeoJohnson"), metric="logLoss", tuneLength=10)
+ldaModel
+saveRDS(ldaModel, "models/lda_range_yeojohnson.rds")
+
+```
+
+Como se observa, el modelo ha obtenido un error de 0.8613, debido a sencillez del modelo, se usará este valor como base para comparar con otros tipos de modelos o procesados. 
+Se probará con otros tipos de preprocesado y se elegirá el que mejor resultados aporte para los otros métodos. En primer lugar se centrarán los datos y se realizará una normalización entre 0 y 1.
+
+```{r LDA-CS, echo=FALSE}
+train_control<- trainControl(method="repeatedcv", number=10,repeats=3, classProbs= TRUE, summaryFunction = multiClassSummary, search = "random")
+ldaModel_cs <- train(  x = train[, names(train) != "OutcomeType"],
+    y = make.names(train$OutcomeType), data=train,method="lda", trControl=train_control,preProc=c("center","scale"), metric="logLoss", tuneLength=10)
+ldaModel_cs
+saveRDS(ldaModel_cs, "models/lda_center_scale.rds")
+```
+
+Posteriormente se probará realizar una normalización, una trasformación de potencia llamada Yeo-Johnson y posteriormente un análisis de componentes principales en el que se elegirán las componentes que expliquen en 80% de la varibilidad del modelo.
+
+Nota: Cuando se realiza un PCA se realiza un escalado también.
+
+```{r LDA-pca, echo=FALSE}
+preProc <- preProcess(train,method="pca",thresh = 0.8)
+trainPC <- predict(preProc,train)
+head(trainPC)
+train_control<- trainControl(method="repeatedcv", number=10,repeats=3, classProbs= TRUE, summaryFunction = multiClassSummary, search = "random")
+ldaModelpca <- train( x = trainPC[, names(trainPC) != "OutcomeType"],
+    y = make.names(trainPC$OutcomeType), data=trainPC,method="lda", trControl=train_control,preProc=c("range","YeoJohnson"), metric="logLoss", tuneLength=10)
+ldaModelpca
+saveRDS(ldaModelpca, "models/lda_range_yeojohnson_pca.rds")
+```
+El modelo toma 10 componentes principales para explicar al menos el 80% de la variabilidad del modelo como se puede observar y obtiene los mejores valores.
+
+Por último se evaluará si los resultados son muy distintos para otro método de estimación del error, en este caso se usará el método .632Bootstrap. La técnica 0.632 bootstrap que tal y como indica su nombre toma muestras bootstrap para realizar el entrenamiento del modelo. Sin embargo, a la hora de realizar el cálculo del error se tienen en cuenta los errores cometidos por los ejemplos dentro de la muestra y los ejemplos fuera de la muestra. La proporción de ejemplos dentro de la muestra son 63.2% ~ 2/3, de ahí su nombre.
+
+```{r LDABoot632, echo=FALSE}
+preProc <- preProcess(train,method="pca",thresh = 0.8)
+trainPC <- predict(preProc,train)
+train_control<- trainControl(method="boot632", number=10, classProbs= TRUE, summaryFunction = multiClassSummary, search = "random")
+ldaModeboot <- train(  x = trainPC[, names(trainPC) != "OutcomeType"],
+    y = make.names(trainPC$OutcomeType), data=trainPC,method="lda", trControl=train_control,preProc=c("range", "YeoJohnson"), metric="logLoss", tuneLength=10)
+ldaModeboot
+saveRDS(ldaModeboot, "models/lda_boot632.rds")
+```
+El uso de otro método de validación no ofrece una diferencia muy significativa respecto al la validación cruzada. Por lo tanto, en principio se podría afirmar que no importa el uso de uno u otro.
+
+Tal y como se observa, el preprocesado con las funciones de range y YeoJohnsonproducen mejores resultados en este caso teniendo en cuenta que en el problema que se está tratando lo que se intenta minimizar lo máximo es el LogLoss. Si se observaran otras medidas de clasificación como por ejemplo el AUC, la selección podría no ser esta.
+
+```{r}
+results = resamples(list(ldaPCA=ldaModelpca, LDA_CS = ldaModel_cs, LDA_RY = ldaModel))
+
+summary(results)
+bwplot(results)
+dotplot(results)
+```
+Se observa como cada modelo realiza una mejor estimación en una medida y peor en otra. Dependiendo del problema se debería tener en cuenta unas medidas por encima de otras. En el caso del problema que se está tratando es el LogLOss que no solo aporta las mejores soluciones, además observando el rango en el que se mueven los errores realizados por el modelo (0.8362977, 0.8903560) son mejores que los otros modelos.
+
+Por lo tanto, se usará este preprocesado en los modelos que consuman mayor tiempo de cómputo con la apuesta de que el preprocesado sea el mejor para estos también. Esta regla no tiene porqué aplicarse con ellos, ya que los modelos son muy variados y puede que las transformaciones aplicadas no sean las más adecuadas. Sin embargo, con el objetivo de ahorrar el mayor tiempo posible intentando lograr los mejores resultados, se ha realizado las pruebas con un modelo simple y rápido de entrenar. Esta es una apuesta que en la realidad debería tener en cuenta el factor del tiempo disponible, dado que no se establece un valor de error límite se dará prioridad al tiempo.
+
+Se estudiará el comportamiento con  otros modelos más complejos con el fin de mejorar los resultados obtenidos.
+
+A continuación, se realizará el entrenamiento con modelos no lineales de tipo enssemble, es específico, se realizarán el entrenamiento usando un algoritmo gbm, un random forest y el algoritmo xgbTree de la librería XGBoost.
+
+A continuación, se realizarán pruebas con un random forest en el que el número de árboles se ha establecido a 500
+
+```{r RF, echo=FALSE}
+rf = readRDS('models/rf.rds')
+rf
+# train_control <- trainControl(method="repeatedcv", number=10, repeats=3, classProbs= TRUE, summaryFunction = multiClassSummary, search="random")
+# mtry <- sqrt(ncol(train))
+# tunegrid <- expand.grid(.mtry=mtry)
+# rf <- train( x = train[, names(train) != "OutcomeType"],
+#     y = OutcomeType, data=train, method="rf", metric="logLoss", 
+#        trControl=train_control, tuneGrid=tunegrid,  preProcess =c("range","YeoJohnson"), tuneLength=10 )
+# rf
+# saveRDS(rf, "models/rf.rds")
+```
+
+Por último, se realizará el entrenamiento del modelo XGBTree, se ha comprobado que los parámetros por defecto del algoritmo son los que mejor resultados han aportado. Por lo tanto, se dejará un grid search con los valores por defecto establecidos para el "eta" (factor de aprendizaje), máxima longitud de los árboles, conjunto de atributos escogidas por árbol, el porcentaje de muestra escogida y número de repeticiones o rondas.
+
+```{r xgbTree, echo=FALSE}
+xgbTree = readRDS('models/xgbTree_no_selection.rds')
+xgbTree
+# train_control <- trainControl(method="repeatedcv", number=10, repeats=3, classProbs= TRUE, summaryFunction = multiClassSummary, verbose=TRUE, search="random")
+# xgbTree <- train(OutcomeType~., data=train,
+#                              method = "xgbTree", 
+#                              trControl = train_control,
+#                              metric = "logLoss", 
+#                              preProc = c("range", "YeoJohnson"), verbose=TRUE, tuneLength=10)
+# xgbTree
+# saveRDS(xgbTree, "models/xgbTree_no_selection.rds")
+```
+A continuación, para finalizar con la fase de modelado se compararán los  modelos más complejos con los más sencillos vistos anteriormente.
+
+```{r comparation}
+xgbTree = readRDS('models/xgbTree_no_selection.rds')
+xgbTree
+rf = readRDS('models/rf.rds')
+gbm = readRDS('models/gbm.rds')
+ldaModel = readRDS('models/lda_range_yeojohnson.rds')
+ldaModelpca = readRDS('models/lda_range_yeojohnson_pca.rds')
+ldaModel_cs = readRDS('models/lda_center_scale.rds')
+
+results = resamples(list(XGBTree=xgbTree, RF=rf, LDA_RY=ldaModel, LDA_CS = ldaModel_cs, LDA_RYPCA = ldaModelpca ))
+
+summary(results)
+bwplot(results)
+dotplot(results)
+```
+
+El modelo XGBTree es el que mejor resultados ha aportado respecto el LogLoss con un valor de 0.7206, sin embargo, antes de enviar los resultados y analizar la eficacia del modelo se realizará una selección de atributos con el objetivo de mejorar la eficacia de estos.
+
+### Selección de atributos
+
+Dado un modelo, se puede analizar la importancia de cada variable a la hora de realizar la predicción. Se analizarán las variables implicadas en el modelo lineal ya que en el caso de un essemble los atributos escogidos no están claros.
+
+```{r}
+varImp(ldaModel)
+```
+En la siguiente tabla se muestra un ranking de variables y la importancia por cada clase. Como se observa la variable más importante es saber si están castrados/esterilizados, mientras que los valores con menos importancia son el segundo color, el mes y el día. Reducir la dimensionalidad del problema puede ayudar a evitar el sobreajuste de los modelos. Por ello, se eliminará la variable que menos aporta.
+
+```{r selection, echo=FALSE}
+train_selection = train
+train_selection$Day = NULL
+
+train_control<- trainControl(method="repeatedcv", number=10,repeats=3, classProbs= TRUE, summaryFunction = multiClassSummary, search = "random")
+
+ldaModel_selection <- train(  x = train_selection[, names(train_selection) != "OutcomeType"],
+    y = train_selection$OutcomeType, data=train_selection,method="lda", trControl=train_control,preProc=c("range","YeoJohnson"), metric="logLoss", tuneLength=10)
+ldaModel_selection
+saveRDS(ldaModel_selection, "models/lda_selection_range_yeojohnson.rds")
+
+```
+
+A continuación, se realizará la eliminación del la variable Month con el objetivo de visualizar el efecto en el error.
+```{r selection-2, echo=FALSE}
+train_selection = train
+train_selection$Day = NULL
+
+train_control<- trainControl(method="repeatedcv", number=10,repeats=3, classProbs= TRUE, summaryFunction = multiClassSummary, search = "random")
+
+ldaModel_selection <- train(  x = train_selection[, names(train_selection) != "OutcomeType"],
+    y = train_selection$OutcomeType, data=train_selection,method="lda", trControl=train_control,preProc=c("range","YeoJohnson"), metric="logLoss", tuneLength=10)
+ldaModel_selection
+saveRDS(ldaModel_selection, "models/lda_selection_range_yeojohnson.rds")
+
+```
+En este caso el error incrementa un poco, por lo que la eliminación de estas dos variables es esperable que no produzca una mejora. Dado que la selección de variables puede convertirse en una búsqueda exhaustiva, se finalizará la experimentación de selección con solo el atributo Day eliminado.
+
+
+El valor de logLoss obtenido es un poco menor en el caso de eliminar el atributo Day, veamos que efectos tiene sobre el CGBTree.
+
+```{r XGB-Model-selected}
+# detach(train)
+# attach(train_selection)
+# train_control <- trainControl(classProbs= TRUE, summaryFunction = multiClassSummary, verboseIter = TRUE, search = "random")
+# xgbTree <- train( OutcomeType ~ ., data=train_selection,
+#                              method = "xgbTree",
+#                              trControl = train_control,
+#                              metric = "logLoss",
+#                              preProc = c("range", "YeoJohnson"), verbose=TRUE, tuneLength=10)
+xgbTree
+saveRDS(xgbTree,"models/xgbTree_selected.rds")
+xgbTree = readRDS("models/xgbTree_selected.rds")
+
+```
+El modelo obtenido en este caso es peor que el obtenido sin selección de atributos, por lo tanto, en este caso no se ha podido mejorar el modelo a través de la eliminación de atributos que a priori no son relevantes.
+
+
+### Resultados
+
+Antes de obtener los resultados, es necesario aplicar el mismo preprocesado realizado al conjunto de entrenamiento al conjunto de test. Sin embargo, hay algunos pequeños cambios respecto al preprocesado realizado al conjunto de entrenamiento. Dado que se precisa que el resultado sea de igual tamaño al conjunto de prueba, no se podrá realizar ninguna acción que elimine los datos tal y como se ha realizado con los outliers y los valores perdidos en la edad y sexo. Por lo tando, será necesario sustituir los valores perdidos, una posible solución sería sustituirlos por la media, pero se intentará obtener una solución mejor usando un randomForest para atribuir esos datos perdidos.
+
+```{r preprocess-test}
+test = read.csv('test.csv', na.strings = "")
+
+test$Name = is.na(test$Name) 
+test$Year = as.numeric(format(as.Date(test$DateTime), '%Y'))
+test$Month = as.numeric(format(as.Date(test$DateTime), '%m'))
+test$Day = as.numeric(format(as.Date(test$DateTime), '%d'))
+test$Hour = as.numeric(format(as.POSIXct(test$DateTime,format="%Y-%m-%d %H:%M:%S"), '%H'))
+test$DateTime = NULL
+
+
+test$isSNUnknown = test$SexuponOutcome=="Unknown"
+test$isSN <- str_split_fixed(as.character(test$SexuponOutcome), " ", 2)[,1]
+test$sex <- str_split_fixed(as.character(test$SexuponOutcome), " ", 2)[,2]
+test$sex[as.character(test$sex)==""] = "Male"
+test$sex[is.na(test$sex)] = "Male"
+test$isSN = !(test$isSN %like% "Intact" | test$isSN %like% "Unknown")
+test$SexuponOutcome = NULL
+
+
+ageValue = as.numeric(sapply(as.character(test$AgeuponOutcome),  
+                      function(x) strsplit(x, split = ' ')[[1]][1]))
+ageUnit = sapply(as.character(test$AgeuponOutcome),  
+                      function(x) strsplit(x, split = ' ')[[1]][2])
+ageUnit = gsub('s', '', ageUnit)
+
+daysForUnit = ifelse(ageUnit == 'day', 1,
+              ifelse(ageUnit == 'week', 7,
+              ifelse(ageUnit == 'month', 30,
+              ifelse(ageUnit == 'year', 365, NA))))
+
+length(ageValue * daysForUnit)
+test$AgeInDays = ageValue * daysForUnit
+test$AgeuponOutcome = NULL
+
+test$isMix = tolower(as.character(test$Breed)) %like% "mix"
+breedWithoutMix = gsub('mix', '',  tolower(as.character(test$Breed)))
+breedWithoutMix = gsub("^\\s+|\\s+$", "", breedWithoutMix)
+test$firstBreed <- str_split_fixed(as.character(breedWithoutMix), "/", 2)[,1]
+test$secondBreed <- str_split_fixed(as.character(breedWithoutMix), "/", 2)[,2]
+test$secondBreed[as.character(test$secondBreed)==""] = NA
+test$Breed = NULL
+
+colorTrimmed = gsub("^\\s+|\\s+$", "", test$Color)
+test$firstColor <- str_split_fixed(as.character(colorTrimmed), "/", 2)[,1]
+test$secondCOlor <- str_split_fixed(as.character(colorTrimmed), "/", 2)[,2]
+test$Color = NULL
+
+
+test$AnimalType = as.numeric(test$AnimalType)
+test$sex = as.numeric(as.factor(test$sex))
+test$firstBreed = as.numeric(as.factor(test$firstBreed))
+test$secondBreed = as.numeric(as.factor(test$secondBreed))
+test$firstColor = as.numeric(as.factor(test$firstColor))
+test$secondCOlor = as.numeric(as.factor(test$secondCOlor))
+test$Name = as.numeric(as.factor(test$Name))
+test$isSN = as.numeric(as.factor(test$isSN))
+test$isSNUnknown = as.numeric(as.factor(test$isSNUnknown))
+test$isMix = as.numeric(as.factor(test$isMix))
+test$secondBreed[is.na(test$secondBreed)] = 0
+
+#test$AgeInDays[is.na(test$AgeInDays)] <- mean(test$AgeInDays, na.rm = TRUE)
+
+test = missForest(test, verbose = TRUE)$ximp
+
+write.csv("test_processed.csv")
+summary(test)
+str(train)
+
+```
+
+
+
+
+Para obtener los resultados se obtendrán las probabilidades por cada clase de tal manera que dado un ejemplo se proporcionará la probabilidad de sus destinos, además, se le incluirá el ID asociado y se exportará a csv.
+
+```{r results}
+xgbTree = readRDS('models/xgbTree_no_selection.rds')
+xgbTree
+result.probs = predict(xgbTree, test, type = "prob")
+result.probs['ID'] = test$ID
+write.csv(result.probs, 'result_xgbTree_no_selection.csv', row.names = FALSE)
+```
+
+El resultado final ha sido de 0.78840 a la hora de realizar la entrega de resultados en la plataforma. Si no se hubiera realizado la selección de atributos los resultados obtenidos serían de 1.00314, mucho mayor de lo esperado. Este efecto puede ser debido al efecto conocido como maldición de la dimensionalidad, debido a este fenómeno el modelo tiende a sobreajustarse demasiado a los resultados.
+
+
+### Conclusiones
+
+Los resultados son los que se muestran, se ha llevado a cabo todo el procesado de los datos hasta llevar a cabo el modelado. Los resultados están lejos de llegar a los mejores puestos en el leaderboard para poder llegar a mejores puestos sería necesario incrementar el tiempo en el modelado incrementando el espacio de búsqueda de los hiperparámetros o utilizando métodos más sotisficados para ello como, por ejemplo, redes neuronales. Los aspectos fundamentales que se han aprendido son:
+
+* Se ha comprobado que una buena selección de atributos influye enormemente en los resultados decrementando el error en gran medida.
+* Se ha comprobado que es importante extraer la mayor información posible de los datos para conseguir lograr los mejores resultados, es decir, se debe exprimir al máximo los datos con los que se dispone intentando siempre obtener los máximos atributos posibles. 
+* Se ha comprobado que la experimentación en modelos más simples puede ayudar a dar una idea intuitiva de comportamientos en modelos más complejos y costosos computacionalmente obteniendo información en un tiempo menor. Sin embargo, esto no tiene porque ser así en todos los casos.
+
